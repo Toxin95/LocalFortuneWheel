@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>La Ruota della Fortuna · Presentatore</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { font-family: "Segoe UI", system-ui, Arial, sans-serif; background: #0a1a52; color: #fff; min-height: 100vh; padding: 16px; max-width: 560px; margin: 0 auto; }
+  .hidden { display: none !important; }
+  h1 { font-size: 17px; letter-spacing: .08em; display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  #conn { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: #a33; letter-spacing: 0; }
+  #conn.on { background: #1c8a4a; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; opacity: .7; margin: 20px 0 8px; }
+  input, textarea { width: 100%; font: inherit; font-size: 17px; padding: 12px; border-radius: 10px; border: 2px solid #2f55c9; background: #06103a; color: #fff; margin-bottom: 8px; }
+  textarea { resize: vertical; min-height: 76px; text-transform: uppercase; }
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 12px; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .3; }
+  .primary { width: 100%; padding: 14px; font-size: 17px; background: #1e7bff; }
+  .item { display: block; width: 100%; text-align: left; padding: 12px 14px; margin-bottom: 8px; background: #132a7c; font-weight: 400; }
+  .item small { display: block; color: #ffd21f; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+  #msg { min-height: 24px; margin: 10px 0; font-weight: 700; text-align: center; }
+  #msg.err { color: #ff8f8f; }
+  #hintBox { color: #ffd21f; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: 13px; }
+  #solution { font-size: 22px; font-weight: 800; letter-spacing: .06em; line-height: 1.4; margin: 4px 0 4px; word-break: break-word; }
+  #solution .off { opacity: .35; }
+  #keys { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  #keys button { aspect-ratio: 1; font-size: 22px; background: #1e7bff; }
+  #keys button.hit { background: #1c8a4a; opacity: 1; }
+  #keys button.miss { background: #3a416b; opacity: .6; text-decoration: line-through; }
+  #solve { width: 100%; padding: 18px; font-size: 20px; background: #ffd21f; color: #0a1a52; margin-top: 18px; }
+  #solve.confirm { background: #ff7a1a; color: #fff; }
+  #again { width: 100%; padding: 14px; font-size: 16px; background: transparent; border: 2px solid #2f55c9; margin-top: 10px; }
+  #won { text-align: center; font-size: 26px; font-weight: 800; color: #ffd21f; margin: 16px 0 4px; }
+</style>
+</head>
+<body>
+<h1>RUOTA DELLA FORTUNA <span id="conn">scollegato</span></h1>
+
+<div id="noToken" class="hidden"><p>Per controllare il gioco inquadra il QR mostrato sul tabellone.</p></div>
+
+<!-- scelta della frase -->
+<div id="setup" class="hidden">
+  <h2>Scrivi una frase</h2>
+  <textarea id="frase" placeholder="La frase da indovinare" maxlength="90"></textarea>
+  <input id="spunto" placeholder="Spunto (es. Proverbio)" maxlength="60">
+  <button class="primary" id="startCustom">Mostra sul tabellone</button>
+  <h2>Oppure scegli dall'elenco</h2>
+  <div id="list"></div>
+</div>
+
+<!-- partita -->
+<div id="play" class="hidden">
+  <div id="hintBox"></div>
+  <div id="solution"></div>
+  <div id="won" class="hidden">🎉 Indovinato!</div>
+  <div id="msg"></div>
+  <div id="keys"></div>
+  <button id="solve">INDOVINATO!</button>
+  <button id="again">Nuova frase</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const token = new URLSearchParams(location.search).get('t');
+let state = null;
+let confirmTimer = null;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json', 'X-Token': token },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Errore');
+  return data;
+}
+
+function say(text, isErr) { $('msg').textContent = text; $('msg').classList.toggle('err', !!isErr); }
+
+async function start(frase, spunto) {
+  try { await api('/api/start', { frase, spunto }); say(''); $('frase').value = ''; $('spunto').value = ''; }
+  catch (e) { alertInline(e.message); }
+}
+function alertInline(text) { $('startCustom').textContent = text; setTimeout(() => { $('startCustom').textContent = 'Mostra sul tabellone'; }, 2500); }
+
+async function loadList() {
+  const list = await api('/api/frasi');
+  $('list').innerHTML = '';
+  for (const f of list) {
+    const b = document.createElement('button');
+    b.className = 'item';
+    const s = document.createElement('small'); s.textContent = f.spunto || 'Senza spunto';
+    b.append(s, document.createTextNode(f.frase));
+    b.onclick = () => start(f.frase, f.spunto);
+    $('list').appendChild(b);
+  }
+  if (!list.length) $('list').textContent = 'Nessuna frase in frasi.json';
+}
+
+// tastiera
+for (const l of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+  const b = document.createElement('button');
+  b.textContent = l; b.dataset.l = l;
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await api('/api/letter', { l });
+      say(r.n ? `${l}: ${r.n} ${r.n === 1 ? 'volta' : 'volte'} ✓` : `Nessuna ${l} ✗`, !r.n);
+    } catch (e) { say(e.message, true); }
+  };
+  $('keys').appendChild(b);
+}
+
+$('startCustom').onclick = () => start($('frase').value, $('spunto').value);
+
+$('solve').onclick = async () => {
+  const b = $('solve');
+  if (!b.classList.contains('confirm')) {          // doppio tocco per evitare errori
+    b.classList.add('confirm'); b.textContent = 'Tocca ancora per confermare';
+    confirmTimer = setTimeout(resetSolve, 3000);
+    return;
+  }
+  resetSolve();
+  try { await api('/api/solve', {}); } catch (e) { say(e.message, true); }
+};
+function resetSolve() { clearTimeout(confirmTimer); $('solve').classList.remove('confirm'); $('solve').textContent = 'INDOVINATO!'; }
+
+$('again').onclick = async () => { try { await api('/api/reset', {}); say(''); loadList(); } catch (e) { say(e.message, true); } };
+
+function render() {
+  const lobby = state.phase === 'lobby';
+  $('setup').classList.toggle('hidden', !lobby);
+  $('play').classList.toggle('hidden', lobby);
+  if (lobby) return;
+
+  $('hintBox').textContent = state.hint || 'Senza spunto';
+  // soluzione: in chiaro le lettere già scoperte sul tabellone
+  const chars = [...state.phrase];
+  $('solution').innerHTML = '';
+  chars.forEach((ch, i) => {
+    const s = document.createElement('span');
+    s.textContent = ch;
+    const c = state.cells[i];
+    if (c.k === 'l' && !c.c) s.className = 'off';
+    $('solution').appendChild(s);
+  });
+
+  const called = Object.fromEntries(state.called.map((c) => [c.l, c.n]));
+  const playing = state.phase === 'playing';
+  for (const b of $('keys').children) {
+    const l = b.dataset.l;
+    const done = l in called;
+    b.disabled = done || !playing;
+    b.className = done ? (called[l] ? 'hit' : 'miss') : '';
+  }
+  $('solve').classList.toggle('hidden', !playing);
+  $('won').classList.toggle('hidden', state.phase !== 'solved');
+  if (!playing) say('');
+}
+
+if (!token) {
+  $('noToken').classList.remove('hidden');
+} else {
+  const es = new EventSource('/events?role=host&t=' + encodeURIComponent(token));
+  es.onopen = () => { $('conn').textContent = 'collegato'; $('conn').classList.add('on'); };
+  es.onerror = () => { $('conn').textContent = 'scollegato'; $('conn').classList.remove('on'); };
+  es.onmessage = (e) => { state = JSON.parse(e.data); render(); };
+  loadList().catch(() => { $('noToken').classList.remove('hidden'); $('noToken').firstElementChild.textContent = 'Chiave non valida: inquadra di nuovo il QR sul tabellone.'; });
+}
+</script>
+</body>
+</html>

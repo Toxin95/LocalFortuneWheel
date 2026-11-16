@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>La Ruota della Fortuna</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Arial Black", "Segoe UI", Arial, sans-serif;
+    color: #fff;
+    background: radial-gradient(ellipse at 50% 30%, #1b3fa8 0%, #0a1a52 55%, #050c2b 100%);
+    overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .hidden { display: none !important; }
+
+  /* ---------- attesa / QR ---------- */
+  #lobby { text-align: center; padding: 4vh 4vw; }
+  #lobby h1 { font-size: clamp(32px, 6vw, 96px); letter-spacing: .06em; text-shadow: 0 6px 0 #061042; }
+  #lobby p { font-family: "Segoe UI", Arial, sans-serif; font-size: clamp(16px, 2.2vw, 32px); margin-top: 2vh; opacity: .9; }
+  #qr { width: min(38vh, 60vw); margin: 4vh auto 0; background: #fff; border-radius: 18px; padding: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+  #qr svg { display: block; width: 100%; height: auto; }
+  #url { font-family: Consolas, monospace; font-size: clamp(12px, 1.4vw, 20px); opacity: .6; margin-top: 2vh; word-break: break-all; }
+  #waiting { font-size: clamp(22px, 3.4vw, 54px) !important; margin-top: 8vh !important; }
+  .dot { animation: blink 1.2s infinite; } .dot:nth-child(2) { animation-delay: .2s; } .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 100% { opacity: .15; } 50% { opacity: 1; } }
+
+  /* ---------- gioco ---------- */
+  #game { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 4vh 2vw 3vh; }
+  #hint {
+    font-size: clamp(22px, 4.2vh, 60px); text-transform: uppercase; letter-spacing: .05em;
+    background: #ffd21f; color: #0a1a52; padding: .35em 1.2em; border-radius: 999px;
+    box-shadow: 0 6px 0 #b58f00, 0 14px 30px rgba(0,0,0,.4); max-width: 94vw; text-align: center;
+  }
+  #boardWrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
+  #board { display: flex; flex-direction: column; gap: .12em; padding: .22em; background: #04091f; border-radius: .25em; box-shadow: 0 0 0 .06em #2f55c9, 0 20px 60px rgba(0,0,0,.6); }
+  .row { display: flex; gap: .12em; }
+  .cell {
+    width: 1em; height: 1.3em; border-radius: .09em;
+    display: flex; align-items: center; justify-content: center;
+    background: #0f2a7a;                    /* cella vuota */
+    transition: background-color .35s ease, box-shadow .35s ease;
+  }
+  .cell span { font-size: .78em; line-height: 1; color: #0a1a52; }
+  .cell.letter { background: #fff; }        /* lettera nascosta: bianca */
+  .cell.punct  { background: #fff; }
+  .cell.lit {                               /* lettera chiamata: si accende di blu */
+    background: #1e7bff;
+    box-shadow: 0 0 .35em .08em #4da0ff, inset 0 0 .2em #bfe0ff;
+    animation: pulse .9s ease-in-out;
+  }
+  .cell.shown { animation: flip .5s ease; } /* poi mostra la lettera */
+  @keyframes pulse { 0% { transform: scale(1); } 40% { transform: scale(1.1); } 100% { transform: scale(1); } }
+  @keyframes flip { 0% { transform: rotateY(90deg); } 100% { transform: rotateY(0); } }
+
+  #called { min-height: 7vh; display: flex; flex-wrap: wrap; gap: .8vh; justify-content: center; align-items: center; max-width: 94vw; }
+  .chip { font-size: clamp(16px, 3vh, 36px); width: 1.7em; height: 1.7em; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #1e7bff; }
+  .chip.miss { background: #3a416b; color: #8d93b8; text-decoration: line-through; }
+
+  #win {
+    position: fixed; left: 0; right: 0; bottom: 12vh; text-align: center; pointer-events: none;
+    font-size: clamp(36px, 9vh, 130px); color: #ffd21f; letter-spacing: .05em;
+    text-shadow: 0 .06em 0 #b54a00, 0 0 .5em rgba(0,0,0,.8);
+    animation: pop .6s cubic-bezier(.2, 1.6, .4, 1) both;
+  }
+  @keyframes pop { 0% { transform: scale(.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+</style>
+</head>
+<body>
+
+<div id="lobby">
+  <h1>LA RUOTA DELLA FORTUNA</h1>
+  <div id="connect">
+    <p>Presentatore: inquadra il QR con il telefono per collegarti</p>
+    <div id="qr"></div>
+    <div id="url"></div>
+  </div>
+  <p id="waiting" class="hidden">Presentatore collegato ✓<br>in attesa della frase<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></p>
+</div>
+
+<div id="game" class="hidden">
+  <div id="hint"></div>
+  <div id="boardWrap"><div id="board"></div></div>
+  <div id="called"></div>
+  <div id="win" class="hidden">INDOVINATO!</div>
+</div>
+
+<script src="/vendor/qrcode.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const MAX_COLS = 14;      // lettere per riga
+const LIT_MS = 900;       // durata dell'accensione blu
+const STAGGER_MS = 280;   // ritardo tra una cella e la successiva
+
+let gameId = null;        // partita attualmente disegnata
+let cellEls = [];         // elemento DOM per ogni carattere della frase
+let shown = [];           // true se la lettera è già stata scoperta sul tabellone
+let layout = { cols: 1, rows: 1 };
+let qrFor = '';
+let timers = [];
+
+function drawQr(url) {
+  if (qrFor === url) return;
+  qrFor = url;
+  const q = qrcode(0, 'M');
+  q.addData(url);
+  q.make();
+  $('qr').innerHTML = q.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+  $('url').textContent = url;
+}
+
+// Divide la frase in righe senza spezzare le parole
+function wrap(cells) {
+  const words = []; let cur = [];
+  cells.forEach((c, i) => {
+    if (c.k === 's') { if (cur.length) words.push(cur); cur = []; }
+    else cur.push(i);
+  });
+  if (cur.length) words.push(cur);
+  const cols = Math.max(MAX_COLS, ...words.map((w) => w.length));
+  const rows = []; let row = [];
+  for (const w of words) {
+    const need = row.length ? row.length + 1 + w.length : w.length;
+    if (need > cols) { rows.push(row); row = [...w]; }
+    else { if (row.length) row.push(-1); row.push(...w); }
+  }
+  if (row.length) rows.push(row);
+  const width = Math.max(...rows.map((r) => r.length)) + 2;  // una cella vuota di margine per lato
+  return { rows, cols: width };
+}
+
+function fit() {
+  const w = window.innerWidth * 0.94 / (layout.cols * 1.12 + 0.5);
+  const h = window.innerHeight * 0.58 / (layout.rows * 1.42 + 0.5);
+  $('board').style.fontSize = Math.floor(Math.min(w, h)) + 'px';
+}
+window.addEventListener('resize', fit);
+
+function build(state) {
+  timers.forEach(clearTimeout); timers = [];
+  const board = $('board');
+  board.innerHTML = '';
+  cellEls = []; shown = [];
+  const { rows, cols } = wrap(state.cells);
+  layout = { cols, rows: rows.length };
+  for (const r of rows) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'row';
+    const padL = Math.floor((cols - r.length) / 2);
+    const idxs = [...Array(padL).fill(-1), ...r, ...Array(cols - r.length - padL).fill(-1)];
+    for (const i of idxs) {
+      const el = document.createElement('div');
+      el.className = 'cell';
+      if (i >= 0) {
+        const c = state.cells[i];
+        const span = document.createElement('span');
+        el.appendChild(span);
+        if (c.k === 'p') { el.classList.add('punct'); span.textContent = c.c; }
+        else {
+          el.classList.add('letter');
+          if (c.c) { span.textContent = c.c; shown[i] = true; }  // già scoperta (es. pagina ricaricata)
+        }
+        cellEls[i] = el;
+      }
+      rowEl.appendChild(el);
+    }
+    board.appendChild(rowEl);
+  }
+  fit();
+}
+
+// Accende di blu le celle appena scoperte, poi mostra la lettera
+function reveal(state) {
+  const fresh = [];
+  state.cells.forEach((c, i) => { if (c.k === 'l' && c.c && !shown[i]) { shown[i] = true; fresh.push(i); } });
+  const fast = state.phase === 'solved';
+  const step = fast ? 70 : STAGGER_MS;
+  const lit = fast ? 350 : LIT_MS;
+  fresh.forEach((i, n) => {
+    const el = cellEls[i];
+    timers.push(setTimeout(() => el.classList.add('lit'), n * step));
+    timers.push(setTimeout(() => {
+      el.classList.remove('lit');
+      el.firstChild.textContent = state.cells[i].c;
+      el.classList.add('shown');
+    }, n * step + lit));
+  });
+}
+
+function render(state) {
+  const playing = state.phase !== 'lobby';
+  $('lobby').classList.toggle('hidden', playing);
+  $('game').classList.toggle('hidden', !playing);
+
+  if (!playing) {
+    gameId = null;
+    drawQr(state.hostUrl);
+    $('connect').classList.toggle('hidden', state.hostOnline);
+    $('waiting').classList.toggle('hidden', !state.hostOnline);
+    return;
+  }
+
+  $('hint').textContent = state.hint || 'Indovina la frase';
+  $('hint').classList.toggle('hidden', false);
+  if (state.id !== gameId) { gameId = state.id; build(state); }
+  reveal(state);
+
+  $('called').innerHTML = '';
+  for (const c of state.called) {
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (c.n ? '' : ' miss');
+    chip.textContent = c.l;
+    $('called').appendChild(chip);
+  }
+  $('win').classList.toggle('hidden', state.phase !== 'solved');
+}
+
+const es = new EventSource('/events?role=board');
+es.onmessage = (e) => render(JSON.parse(e.data));
+</script>
+</body>
+</html>
