@@ -1,19 +1,20 @@
-// La Ruota della Fortuna - server di gioco (nessuna dipendenza: basta Node.js 18+)
+// Local Fortune Wheel - modalità LAN (nessuna dipendenza: basta Node.js 18+)
+// Telefono e tabellone parlano con questo server nella rete locale: non serve internet.
 // Avvio:  node server.js
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const dgram = require('dgram');
+const { createGame, apply } = require('./public/game.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOKEN = crypto.randomBytes(4).toString('hex'); // chiave del presentatore, sta nel QR
 const PUB = path.join(__dirname, 'public');
-const FRASI = path.join(__dirname, 'frasi.json');
-const MAX_LEN = 90;
+const FRASI = path.join(PUB, 'frasi.json');
 
 // ---------- rete ----------
-const dgram = require('dgram');
 
 // Tutti gli IPv4 del PC, scartando le schede virtuali (VirtualBox, WSL, Docker, VPN...)
 function lanIps() {
@@ -22,7 +23,9 @@ function lanIps() {
   for (const [nome, list] of Object.entries(os.networkInterfaces())) {
     if (virtuali.test(nome)) continue;
     for (const i of list || []) {
-      if (i.family === 'IPv4' && !i.internal && !i.address.startsWith('192.168.56.')) out.push(i.address);
+      if (i.family !== 'IPv4' || i.internal) continue;
+      if (i.address.startsWith('192.168.56.') || i.address.startsWith('169.254.')) continue; // VirtualBox / scheda senza rete
+      out.push(i.address);
     }
   }
   return out;
@@ -46,51 +49,45 @@ function primaryIp() {
   });
 }
 
+// Indirizzi da proporre nel QR, il più probabile per primo. Vengono ricalcolati
+// di continuo: se il PC cambia rete (Wi-Fi, cavo, VPN) il QR si aggiorna da solo.
 let IPS = [];
-let HOST_URL = '';
+const hostUrl = (ip) => `http://${ip}:${PORT}/host?t=${TOKEN}`;
+
+async function refreshNetwork() {
+  let ips;
+  if (process.env.HOST_IP) ips = [process.env.HOST_IP];
+  else {
+    const main = await primaryIp();
+    const all = lanIps();
+    ips = [...new Set([main, ...all].filter((ip) => ip && all.includes(ip)))];
+    if (!ips.length) ips = main ? [main] : ['localhost'];
+  }
+  const changed = ips.join() !== IPS.join();
+  IPS = ips;
+  return changed;
+}
 
 // ---------- stato di gioco ----------
-let game = { id: 0, phase: 'lobby', phrase: '', hint: '', called: [] };
+const game = createGame();
 const clients = new Set(); // { res, role }
 
-const base = (ch) => ch.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
-const isLetter = (ch) => /\p{L}/u.test(ch);
-
-function cells() {
-  return [...game.phrase].map((ch) => {
-    if (ch === ' ') return { k: 's' };                 // spazio
-    if (!isLetter(ch)) return { k: 'p', c: ch };       // punteggiatura / numeri: sempre visibili
-    const shown = game.phase === 'solved' || game.called.includes(base(ch));
-    return { k: 'l', c: shown ? ch : null };           // lettera
-  });
-}
-
-function countOf(letter) {
-  return [...game.phrase].filter((ch) => isLetter(ch) && base(ch) === letter).length;
-}
-
 function stateFor(role) {
-  const s = {
-    id: game.id,
-    phase: game.phase,
-    hint: game.hint,
-    cells: cells(),
-    called: game.called.map((l) => ({ l, n: countOf(l) })),
-    hostOnline: [...clients].some((c) => c.role === 'host'),
-  };
-  if (role === 'host') s.phrase = game.phrase;
-  if (role === 'board') s.hostUrl = HOST_URL;
+  const s = game.state(role, [...clients].some((c) => c.role === 'host'));
+  if (role === 'board') s.hostUrls = IPS.map(hostUrl);
   return s;
 }
 
 function broadcast() {
-  for (const c of clients) {
-    c.res.write(`data: ${JSON.stringify(stateFor(c.role))}\n\n`);
-  }
+  for (const c of clients) c.res.write(`data: ${JSON.stringify(stateFor(c.role))}\n\n`);
 }
 
 // ---------- utilità http ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8' };
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+};
 
 function sendFile(res, file) {
   fs.readFile(file, (err, data) => {
@@ -130,10 +127,8 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
   const isHost = (url.searchParams.get('t') || req.headers['x-token']) === TOKEN;
 
-  // pagine
-  if (req.method === 'GET' && p === '/') return sendFile(res, path.join(PUB, 'board.html'));
-  if (req.method === 'GET' && p === '/host') return sendFile(res, path.join(PUB, 'host.html'));
-  if (req.method === 'GET' && p === '/vendor/qrcode.js') return sendFile(res, path.join(PUB, 'vendor', 'qrcode.js'));
+  // le pagine capiscono da qui che stanno girando in modalità LAN
+  if (req.method === 'GET' && p === '/lan') return json(res, 200, { lan: true });
 
   // flusso eventi (Server-Sent Events)
   if (req.method === 'GET' && p === '/events') {
@@ -150,45 +145,26 @@ const server = http.createServer(async (req, res) => {
   // API del presentatore
   if (p.startsWith('/api/')) {
     if (!isHost) return json(res, 403, { error: 'Chiave non valida: inquadra di nuovo il QR.' });
-
     if (req.method === 'GET' && p === '/api/frasi') return json(res, 200, loadFrasi());
-
     if (req.method === 'POST') {
       const body = await readBody(req);
-
-      if (p === '/api/start') {
-        const phrase = String(body.frase || '').replace(/\s+/g, ' ').trim().toUpperCase();
-        const hint = String(body.spunto || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-        if (![...phrase].some(isLetter)) return json(res, 400, { error: 'Scrivi una frase.' });
-        if (phrase.length > MAX_LEN) return json(res, 400, { error: `Frase troppo lunga (massimo ${MAX_LEN} caratteri).` });
-        game = { id: game.id + 1, phase: 'playing', phrase, hint, called: [] };
+      try {
+        const out = apply(game, { ...body, type: p.slice(5) });
         broadcast();
-        return json(res, 200, { ok: true });
-      }
-
-      if (p === '/api/letter') {
-        const l = base(String(body.l || '').trim().slice(0, 1));
-        if (game.phase !== 'playing') return json(res, 400, { error: 'Nessuna partita in corso.' });
-        if (!/^[A-Z]$/.test(l)) return json(res, 400, { error: 'Lettera non valida.' });
-        if (game.called.includes(l)) return json(res, 400, { error: `La ${l} è già stata chiamata.` });
-        game.called.push(l);
-        broadcast();
-        return json(res, 200, { ok: true, l, n: countOf(l) });
-      }
-
-      if (p === '/api/solve') {
-        if (game.phase !== 'playing') return json(res, 400, { error: 'Nessuna partita in corso.' });
-        game.phase = 'solved';
-        broadcast();
-        return json(res, 200, { ok: true });
-      }
-
-      if (p === '/api/reset') {
-        game = { id: game.id + 1, phase: 'lobby', phrase: '', hint: '', called: [] };
-        broadcast();
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, ...out });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
       }
     }
+    return json(res, 404, { error: 'Non trovato' });
+  }
+
+  // pagine e file statici (cartella public)
+  if (req.method === 'GET') {
+    let rel = p === '/' ? 'index.html' : p === '/host' ? 'host.html' : p.slice(1);
+    try { rel = decodeURIComponent(rel); } catch { rel = ''; }
+    const file = path.resolve(PUB, rel);
+    if (rel && file.startsWith(PUB + path.sep)) return sendFile(res, file);
   }
 
   res.writeHead(404); res.end('Non trovato');
@@ -198,17 +174,20 @@ const server = http.createServer(async (req, res) => {
 setInterval(() => { for (const c of clients) c.res.write(': ping\n\n'); }, 25000);
 
 (async () => {
-  const main = await primaryIp();
-  IPS = lanIps();
-  const ip = process.env.HOST_IP || main || IPS[0] || 'localhost';
-  HOST_URL = `http://${ip}:${PORT}/host?t=${TOKEN}`;
-  const altri = IPS.filter((a) => a !== ip);
+  await refreshNetwork();
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log('\n  LA RUOTA DELLA FORTUNA\n');
+    console.log('\n  LOCAL FORTUNE WHEEL (modalità LAN)\n');
     console.log(`  Tabellone (apri su questo PC):  http://localhost:${PORT}`);
-    console.log(`  Presentatore (telefono):        ${HOST_URL}`);
-    if (altri.length) console.log(`\n  Altri indirizzi di rete trovati: ${altri.join(', ')}\n  (se il QR non funziona riavvia con  set HOST_IP=<indirizzo>  prima di node server.js)`);
+    console.log(`  Presentatore (telefono):        ${hostUrl(IPS[0])}`);
+    if (IPS.length > 1) console.log(`\n  Altri indirizzi di rete trovati: ${IPS.slice(1).join(', ')}\n  (se il QR non funziona, sul tabellone clicca "Cambia indirizzo")`);
     console.log('\n  Il telefono deve essere sulla stessa rete Wi-Fi del PC.\n');
   });
+
+  setInterval(async () => {
+    if (await refreshNetwork()) {
+      console.log(`  Rete cambiata, nuovo indirizzo presentatore: ${hostUrl(IPS[0])}`);
+      broadcast();
+    }
+  }, 5000);
 })();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>La Ruota della Fortuna · Presentatore</title>
+<title>Local Fortune Wheel · Presentatore</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body { font-family: "Segoe UI", system-ui, Arial, sans-serif; background: #0a1a52; color: #fff; min-height: 100vh; padding: 16px; max-width: 560px; margin: 0 auto; }
@@ -35,7 +35,7 @@
 </style>
 </head>
 <body>
-<h1>RUOTA DELLA FORTUNA <span id="conn">scollegato</span></h1>
+<h1>LOCAL FORTUNE WHEEL <span id="conn">scollegato</span></h1>
 
 <div id="noToken" class="hidden"><p>Per controllare il gioco inquadra il QR mostrato sul tabellone.</p></div>
 
@@ -62,11 +62,17 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const token = new URLSearchParams(location.search).get('t');
+const token = new URLSearchParams(location.search).get('t');  // modalità LAN:    host?t=chiave
+const boardCode = location.hash.slice(1);                      // modalità online: host.html#codice
 let state = null;
 let confirmTimer = null;
 
-async function api(path, body) {
+function setConn(on) { $('conn').textContent = on ? 'collegato' : 'scollegato'; $('conn').classList.toggle('on', on); }
+function showProblem(text) { $('noToken').firstElementChild.textContent = text; $('noToken').classList.remove('hidden'); }
+function hideProblem() { $('noToken').classList.add('hidden'); }
+
+// ---------- modalità LAN: comandi via HTTP a server.js ----------
+async function lanFetch(path, body) {
   const r = await fetch(path, {
     method: body ? 'POST' : 'GET',
     headers: { 'Content-Type': 'application/json', 'X-Token': token },
@@ -77,16 +83,78 @@ async function api(path, body) {
   return data;
 }
 
+// ---------- modalità online: collegamento diretto al tabellone con PeerJS ----------
+let conn = null;
+let rid = 0;
+const pending = new Map();
+let retryTimer = null;
+
+function peerSend(type, body) {
+  return new Promise((resolve, reject) => {
+    if (!conn || !conn.open) return reject(new Error('Non collegato al tabellone, riprova tra un attimo.'));
+    const id = ++rid;
+    pending.set(id, { resolve, reject });
+    conn.send({ ...body, type, rid: id });
+    setTimeout(() => { if (pending.delete(id)) reject(new Error('Il tabellone non risponde.')); }, 8000);
+  });
+}
+
+function startOnline() {
+  const s = document.createElement('script');
+  s.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+  s.onerror = () => showProblem('Serve una connessione a internet. Ricarica la pagina quando torna la rete.');
+  s.onload = () => {
+    const peer = new Peer();
+    const again = (ms) => { clearTimeout(retryTimer); retryTimer = setTimeout(connect, ms); };
+
+    function connect() {
+      if (peer.destroyed) return;
+      if (peer.disconnected) { peer.reconnect(); return; }   // al rientro chiamerà di nuovo connect
+      if (conn) conn.close();
+      const c = peer.connect(boardCode, { reliable: true });
+      conn = c;
+      c.on('open', () => { if (conn === c) { setConn(true); hideProblem(); } });
+      c.on('data', (msg) => {
+        if (msg.type === 'state') { state = msg.state; render(); }
+        else if (msg.type === 'reply' && pending.has(msg.rid)) {
+          const p = pending.get(msg.rid); pending.delete(msg.rid);
+          msg.ok ? p.resolve(msg) : p.reject(new Error(msg.error || 'Errore'));
+        }
+      });
+      c.on('close', () => { if (conn === c) { setConn(false); again(2000); } });
+    }
+
+    peer.on('open', connect);
+    peer.on('disconnected', () => again(3000));
+    peer.on('error', (err) => {
+      setConn(false);
+      if (err.type === 'peer-unavailable') showProblem('Tabellone non trovato: controlla che sia aperto e inquadra di nuovo il QR.');
+      again(3000);
+    });
+    // il telefono in standby chiude il collegamento: al risveglio si ricollega subito
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !(conn && conn.open)) again(0);
+    });
+  };
+  document.head.appendChild(s);
+}
+
+const online = !token && !!boardCode;
+const api = {
+  frasi: () => (online ? fetch('frasi.json', { cache: 'no-store' }).then((r) => r.json()) : lanFetch('/api/frasi')),
+  send: (type, body = {}) => (online ? peerSend(type, body) : lanFetch('/api/' + type, body)),
+};
+
 function say(text, isErr) { $('msg').textContent = text; $('msg').classList.toggle('err', !!isErr); }
 
 async function start(frase, spunto) {
-  try { await api('/api/start', { frase, spunto }); say(''); $('frase').value = ''; $('spunto').value = ''; }
+  try { await api.send('start', { frase, spunto }); say(''); $('frase').value = ''; $('spunto').value = ''; }
   catch (e) { alertInline(e.message); }
 }
 function alertInline(text) { $('startCustom').textContent = text; setTimeout(() => { $('startCustom').textContent = 'Mostra sul tabellone'; }, 2500); }
 
 async function loadList() {
-  const list = await api('/api/frasi');
+  const list = (await api.frasi()).filter((f) => f && typeof f.frase === 'string');
   $('list').innerHTML = '';
   for (const f of list) {
     const b = document.createElement('button');
@@ -106,7 +174,7 @@ for (const l of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
   b.onclick = async () => {
     b.disabled = true;
     try {
-      const r = await api('/api/letter', { l });
+      const r = await api.send('letter', { l });
       say(r.n ? `${l}: ${r.n} ${r.n === 1 ? 'volta' : 'volte'} ✓` : `Nessuna ${l} ✗`, !r.n);
     } catch (e) { say(e.message, true); }
   };
@@ -123,11 +191,11 @@ $('solve').onclick = async () => {
     return;
   }
   resetSolve();
-  try { await api('/api/solve', {}); } catch (e) { say(e.message, true); }
+  try { await api.send('solve'); } catch (e) { say(e.message, true); }
 };
 function resetSolve() { clearTimeout(confirmTimer); $('solve').classList.remove('confirm'); $('solve').textContent = 'INDOVINATO!'; }
 
-$('again').onclick = async () => { try { await api('/api/reset', {}); say(''); loadList(); } catch (e) { say(e.message, true); } };
+$('again').onclick = async () => { try { await api.send('reset'); say(''); } catch (e) { say(e.message, true); } };
 
 function render() {
   const lobby = state.phase === 'lobby';
@@ -160,14 +228,17 @@ function render() {
   if (!playing) say('');
 }
 
-if (!token) {
-  $('noToken').classList.remove('hidden');
-} else {
+if (online) {
+  startOnline();
+  loadList().catch(() => { $('list').textContent = 'Elenco delle frasi non disponibile.'; });
+} else if (token) {
   const es = new EventSource('/events?role=host&t=' + encodeURIComponent(token));
-  es.onopen = () => { $('conn').textContent = 'collegato'; $('conn').classList.add('on'); };
-  es.onerror = () => { $('conn').textContent = 'scollegato'; $('conn').classList.remove('on'); };
+  es.onopen = () => setConn(true);
+  es.onerror = () => setConn(false);
   es.onmessage = (e) => { state = JSON.parse(e.data); render(); };
-  loadList().catch(() => { $('noToken').classList.remove('hidden'); $('noToken').firstElementChild.textContent = 'Chiave non valida: inquadra di nuovo il QR sul tabellone.'; });
+  loadList().catch(() => showProblem('Chiave non valida: inquadra di nuovo il QR sul tabellone.'));
+} else {
+  showProblem('Per controllare il gioco inquadra il QR mostrato sul tabellone.');
 }
 </script>
 </body>
