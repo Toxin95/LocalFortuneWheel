@@ -22,6 +22,8 @@ Il presentatore vede la soluzione sul telefono: meglio tenerlo lontano dagli occ
 
 Se il telefono si scollega durante la partita, in basso a sinistra sul tabellone compare un piccolo QR per ricollegarsi. Per azzerare tutto dal PC c'è il tasto **↺ Ricomincia** in basso a destra (due clic per conferma).
 
+Anche sul telefono, in alto, ci sono **↺ Ricomincia** (azzera la partita) e **Disconnetti** (lascia il posto a un altro presentatore: il tabellone torna a mostrare il QR). Entrambi chiedono un secondo tocco di conferma.
+
 ## Due modalità
 
 | | Online (GitHub Pages) | LAN (`node server.js`) |
