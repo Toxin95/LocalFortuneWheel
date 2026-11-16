@@ -104,6 +104,25 @@
     animation: pop .6s cubic-bezier(.2, 1.6, .4, 1) both;
   }
   @keyframes pop { 0% { transform: scale(.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+  /* ---------- presentatore scollegato durante la partita ---------- */
+  #miniJoin {
+    position: fixed; left: 2vh; bottom: 2vh; display: flex; align-items: center; gap: 1.4vh;
+    background: rgba(4, 9, 31, .8); border: 1px solid rgba(77, 160, 255, .35); border-radius: 1.6vh; padding: 1.2vh;
+    font-family: "Segoe UI", Arial, sans-serif; font-size: clamp(12px, 1.7vh, 20px); max-width: 40vw;
+  }
+  #miniQr { width: 13vh; background: #fff; border-radius: .8vh; padding: .5vh; flex: none; }
+  #miniQr svg { display: block; width: 100%; height: auto; }
+
+  /* ---------- tasto Ricomincia (sul PC) ---------- */
+  #resetBtn {
+    position: fixed; right: 2vh; bottom: 2vh; z-index: 5;
+    font: 600 clamp(12px, 1.7vh, 20px) "Segoe UI", Arial, sans-serif; color: #fff; cursor: pointer;
+    padding: .6em 1.1em; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); background: rgba(4, 9, 31, .6);
+    opacity: .35; transition: opacity .3s, background-color .2s;
+  }
+  #resetBtn:hover, #resetBtn:focus-visible { opacity: 1; }
+  #resetBtn.confirm { opacity: 1; background: #d9480f; border-color: #ff8f5a; }
 </style>
 </head>
 <body>
@@ -142,7 +161,13 @@
   <div id="boardWrap"><div id="board"></div></div>
   <div id="called"></div>
   <div id="win" class="hidden">INDOVINATO!</div>
+  <div id="miniJoin" class="hidden">
+    <div id="miniQr"></div>
+    <span>Presentatore scollegato: inquadra il QR per tornare al telecomando</span>
+  </div>
 </div>
+
+<button id="resetBtn" title="Azzera la partita e torna alla schermata iniziale">↺ Ricomincia</button>
 
 <script src="vendor/qrcode.js"></script>
 <script src="game.js"></script>
@@ -165,7 +190,9 @@ function drawQr(url) {
   const q = qrcode(0, 'M');
   q.addData(url);
   q.make();
-  $('qr').innerHTML = q.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+  const svg = q.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+  $('qr').innerHTML = svg;
+  $('miniQr').innerHTML = svg;   // stesso QR, piccolo, durante la partita
   $('url').textContent = url;
 }
 
@@ -275,11 +302,12 @@ function render(state) {
   const playing = state.phase !== 'lobby';
   $('lobby').classList.toggle('hidden', playing);
   $('game').classList.toggle('hidden', !playing);
+  hostUrls = state.hostUrls || [];
+  showHostUrl();
+  $('miniJoin').classList.toggle('hidden', !playing || state.hostOnline || !qrFor);
 
   if (!playing) {
     gameId = null;
-    hostUrls = state.hostUrls || [];
-    showHostUrl();
     $('connect').classList.toggle('hidden', state.hostOnline);
     $('waiting').classList.toggle('hidden', !state.hostOnline);
     return;
@@ -299,6 +327,29 @@ function render(state) {
   }
   $('win').classList.toggle('hidden', state.phase !== 'solved');
 }
+
+// ---------- tasto Ricomincia: azzera la partita dal PC (due clic per sicurezza) ----------
+let resetTimer = null;
+function resetLabel() { clearTimeout(resetTimer); $('resetBtn').classList.remove('confirm'); $('resetBtn').textContent = '↺ Ricomincia'; }
+$('resetBtn').onclick = async () => {
+  const b = $('resetBtn');
+  if (!b.classList.contains('confirm')) {
+    b.classList.add('confirm'); b.textContent = 'Clicca ancora per azzerare';
+    resetTimer = setTimeout(resetLabel, 3000);
+    return;
+  }
+  resetLabel();
+  b.blur();
+  if (game) {
+    // online: azzera la partita e chiude i collegamenti; il telefono ancora acceso si ricollega da solo
+    FortuneWheel.apply(game, { type: 'reset' });
+    for (const c of phones) c.close();
+    phones.clear();
+    publish();
+  } else {
+    await fetch('board/reset', { method: 'POST' }).catch(() => {});
+  }
+};
 
 // ---------- modalità LAN: avviato con  node server.js ----------
 function startLan() {
@@ -361,8 +412,10 @@ function openPeer(code, attempt) {
   });
 
   peer.on('connection', (conn) => {
-    conn.on('open', () => { phones.add(conn); publish(); });
+    conn.on('open', () => { conn.lastSeen = Date.now(); phones.add(conn); publish(); });
     conn.on('data', (msg) => {
+      conn.lastSeen = Date.now();
+      if (msg && msg.type === 'pong') return;
       let reply;
       try { reply = { ok: true, ...FortuneWheel.apply(game, msg) }; }
       catch (e) { reply = { ok: false, error: e.message }; }
@@ -391,6 +444,19 @@ function openPeer(code, attempt) {
     else if (peer.disconnected) retry(() => peer.reconnect(), 5000);
   });
 }
+
+// Un telefono che si spegne o perde la rete non chiude il collegamento: lo si capisce
+// perché smette di rispondere ai segnali periodici, e allora lo si considera scollegato.
+const PING_MS = 5000;
+const SILENCE_MS = 15000;
+setInterval(() => {
+  let changed = false;
+  for (const c of phones) {
+    if (Date.now() - c.lastSeen > SILENCE_MS) { phones.delete(c); c.close(); changed = true; }
+    else c.send({ type: 'ping' });
+  }
+  if (changed) publish();
+}, PING_MS);
 
 // Se la pagina è servita da server.js siamo in modalità LAN, altrimenti online
 fetch('lan', { cache: 'no-store' })

@@ -142,6 +142,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // tasto Ricomincia del tabellone: accettato solo dal PC su cui gira il server
+  if (req.method === 'POST' && p === '/board/reset') {
+    const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+    if (!local) return json(res, 403, { error: 'Il tabellone si può azzerare solo da questo PC.' });
+    apply(game, { type: 'reset' });
+    broadcast();
+    return json(res, 200, { ok: true });
+  }
+
   // API del presentatore
   if (p.startsWith('/api/')) {
     if (!isHost) return json(res, 403, { error: 'Chiave non valida: inquadra di nuovo il QR.' });

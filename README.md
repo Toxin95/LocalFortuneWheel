@@ -20,6 +20,8 @@ Il gioco della frase misteriosa da fare in compagnia: lo schermo del PC (o la TV
 
 Il presentatore vede la soluzione sul telefono: meglio tenerlo lontano dagli occhi dei concorrenti!
 
+Se il telefono si scollega durante la partita, in basso a sinistra sul tabellone compare un piccolo QR per ricollegarsi. Per azzerare tutto dal PC c'è il tasto **↺ Ricomincia** in basso a destra (due clic per conferma).
+
 ## Due modalità
 
 | | Online (GitHub Pages) | LAN (`node server.js`) |

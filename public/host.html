@@ -88,6 +88,7 @@ let conn = null;
 let rid = 0;
 const pending = new Map();
 let retryTimer = null;
+let lastBoard = 0;   // ultimo messaggio ricevuto dal tabellone
 
 function peerSend(type, body) {
   return new Promise((resolve, reject) => {
@@ -113,9 +114,11 @@ function startOnline() {
       if (conn) conn.close();
       const c = peer.connect(boardCode, { reliable: true });
       conn = c;
-      c.on('open', () => { if (conn === c) { setConn(true); hideProblem(); } });
+      c.on('open', () => { if (conn === c) { lastBoard = Date.now(); setConn(true); hideProblem(); } });
       c.on('data', (msg) => {
-        if (msg.type === 'state') { state = msg.state; render(); }
+        lastBoard = Date.now();
+        if (msg.type === 'ping') c.send({ type: 'pong' });
+        else if (msg.type === 'state') { state = msg.state; render(); }
         else if (msg.type === 'reply' && pending.has(msg.rid)) {
           const p = pending.get(msg.rid); pending.delete(msg.rid);
           msg.ok ? p.resolve(msg) : p.reject(new Error(msg.error || 'Errore'));
@@ -132,8 +135,11 @@ function startOnline() {
       again(3000);
     });
     // il telefono in standby chiude il collegamento: al risveglio si ricollega subito
+    // il tabellone manda un segnale ogni 5 secondi: se tace da troppo il collegamento è morto
+    const stale = () => !(conn && conn.open) || Date.now() - lastBoard > 15000;
+    setInterval(() => { if (conn && conn.open && stale()) { setConn(false); conn.close(); again(0); } }, 5000);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && !(conn && conn.open)) again(0);
+      if (document.visibilityState === 'visible' && stale()) again(0);
     });
   };
   document.head.appendChild(s);
